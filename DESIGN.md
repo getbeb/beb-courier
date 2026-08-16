@@ -65,9 +65,8 @@ and why `listen` is a thing you add rather than a thing you need.
 ## Verbs
 
     beb-courier init          mint this machine's courier key
-    beb-courier whoami        the authorized_keys line for a depot
-    beb-courier register      claim queues at the depot, signed by
-                              each identity that lives here
+    beb-courier whoami        the authorized_keys line for a depot,
+                              and the recipients this machine reads for
     beb-courier sync          push the outbox, pull the inbox, once
     beb-courier listen        hold a connection so arrivals wake a
                               session; the only long-lived verb
@@ -102,18 +101,26 @@ same frame, both hand it to beb, and the second is told it was already
 delivered. Coordination between them is an optimisation, not a
 correctness requirement.
 
-## Registration
+## Being allowed to collect
 
-A depot will not hand mail to a courier that has not claimed the
-recipient, and a claim is signed by the identity itself -- so a
-courier cannot claim a queue it has no key for. The claim binds the
-identity key, the courier key, the depot it is addressed to, the
-operation, a nonce and an expiry, because a claim that binds less than
-that is a claim that can be replayed somewhere else, later.
+A depot will not hand mail to a courier that has not been granted the
+recipient, and granting is the operator's, at the depot: one
+`beb-depot allow` line beside the `authorized_keys` line. So a courier
+has nothing to do here beyond telling the operator what to type, which
+is what `whoami` prints -- its own line, and the recipients this
+machine reads for.
 
-Adding an identity to a machine means one more claim. It does not mean
-touching the depot's `authorized_keys`, which names the courier and
-nothing else.
+There was a `register` verb here: the courier presenting a claim
+signed by each identity it holds, so that adding an identity would not
+mean touching the depot. That is the right protocol and the wrong
+time. It buys reach at scale, not safety, and until a courier carries
+more identities than an operator can type, a signature-verification
+path on the depot is machinery guarding a decision a human already
+made by hand.
+
+It stays absent rather than stubbed. Nothing in `sync` or `listen`
+asks how a grant was made, so the verb can arrive later without any of
+this changing.
 
 ## What it never does
 
