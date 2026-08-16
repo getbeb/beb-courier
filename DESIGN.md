@@ -12,25 +12,38 @@ somebody.
 ## What it moves
 
 Frames. Opaque ones. A courier never parses an envelope, never
-verifies a signature, and never opens the spool: it asks beb for the
-next thing to send and beb answers with the bytes *and* the address
-they are for.
+verifies a signature, and never asks beb anything: what is waiting to
+leave is a directory, and the name of each file says both things a
+courier needs to know.
 
-    $ beb pickup
-    beb: outbound 1 for backend; 550 bytes; beb rm 1 once it has landed
-    beb: to ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
-    <the frame, on stdout>
+    ~/.local/share/beb/outbox/000000000000000001-d811f21767d40b…756e
+                              └─ order ─────────┘ └─ who it is for ┘
 
-That second line is why nothing here needs a parser. The one before it
-is why nothing here needs to know where a mailbox lives.
+So the outbound half is four lines and no beb process:
 
-The rule, and it is the only one that matters: **a courier may only
-touch beb's plumbing.** If it needs something the plumbing does not
-expose, that is a missing verb in beb, not a path to open under the
-spool. Both times a transport reached into beb's storage instead, it
+    for f in "$SPOOL"/outbox/0*; do
+        n=${f##*/}; to=${n#*-}
+        ship "$f" "$(route "$to")" && rm -f "$f"
+    done
+
+There were two beb verbs here until the outbox learned to name its
+recipients -- one to hand a frame over, one to remove it afterwards --
+and both existed only because the address lived inside the frame,
+which is the one place a courier must not look.
+
+The rule, and it is the only one that matters: **a courier reads the
+outbox and calls `drop`, and touches nothing else.** It does not
+compute a path into a mailbox, does not decide who lives here, does
+not open an envelope. Both times a transport reached past that line it
 drifted -- once on how a mailbox is named, once on what counts as
 living here -- and both times it broke silently the next time beb
 changed.
+
+The seam is a place going out and a verb coming in, and that asymmetry
+is the point rather than an inconsistency. Outbound has no rules: flat,
+complete frames, already signed and addressed. Inbound has all of them
+-- residency, deduplication, the counter, the cursor -- and a courier
+must not know any.
 
 ## Two directions, and they are not alike
 
@@ -72,12 +85,12 @@ to which one carried the bytes.
 
 ## Custody
 
-    outbound   beb pickup -> ship -> the depot accepts -> beb rm <id>
+    outbound   read the outbox -> ship -> the depot accepts -> unlink
     inbound    the depot streams -> beb drop -> ack -> the depot deletes
 
-`pickup` does not remove and the depot does not delete until told, so
-a courier that dies mid-transfer loses nothing: the frame is still
-where it was, and the next attempt finds it.
+Nothing is removed until the other end has it, in either direction, so
+a courier that dies mid-transfer loses nothing: the file is still where
+it was, and the next attempt finds it.
 
 Nothing here counts attempts or records what is in flight. Retrying is
 the courier's business only in the sense that it is the one still
@@ -104,6 +117,8 @@ nothing else.
 
 ## What it never does
 
-Own a queue format, keep a shelf, count retries, compute a path under
-beb's spool, or read a message. If any of those start to look
+Own a queue format, keep a shelf, count retries, or read a message. It
+does read one path under beb's spool -- the outbox -- and that is the
+whole of the contract between them: a flat directory, `<id>-<address>`,
+each file a complete frame. If anything beyond that starts to look
 necessary, the answer is upstream.
