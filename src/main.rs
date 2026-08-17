@@ -711,6 +711,16 @@ fn beb_path() -> String {
     "beb".to_string()
 }
 
+/// The supervisor file for whichever supervisor this machine has.
+///
+/// It printed a systemd unit on every platform, which on the one macOS
+/// box in the fleet was a file nothing would ever read. A verb whose
+/// whole job is "hand this to your init system" has to know which one
+/// it is talking to, and the binary already knows: it is built per
+/// platform.
+///
+/// Still printed and never installed. Where a supervisor file belongs,
+/// and whether it is wanted, is the operator's.
 fn cmd_unit(args: &[String]) -> Result<(), Fail> {
     if !args.is_empty() {
         return Err("unit takes nothing: beb-courier unit".into());
@@ -720,17 +730,54 @@ fn cmd_unit(args: &[String]) -> Result<(), Fail> {
     let root = root()?;
     // The beb this operator can see, named by absolute path.
     //
-    // A unit inherits none of the operator's PATH: systemd gives a user
-    // service /usr/local/bin and /usr/bin and nothing else. On the first
-    // machine to run one, that resolved a beb from another install --
-    // four minor versions behind, refusing every frame as malformed --
-    // while the same command in a login shell used the right one and
-    // worked. The unit says which, so the two cannot disagree.
+    // A supervisor inherits none of the operator's PATH: systemd gives a
+    // user service /usr/local/bin and /usr/bin and nothing else, and
+    // launchd is no better. On the first machine to run one, that
+    // resolved a beb from another install -- four minor versions behind,
+    // refusing every frame as malformed -- while the same command in a
+    // login shell used the right one and worked. The file says which, so
+    // the two cannot disagree.
     let beb = beb_path();
+    let (exe, root) = (exe.display().to_string(), root.display().to_string());
     let mut out = io::stdout().lock();
-    // Printed, never installed. Where a unit belongs and whether it is
-    // wanted is the operator's, and a program that writes into
-    // /etc is a program that has to be trusted with more than it needs.
+
+    if cfg!(target_os = "macos") {
+        write!(
+            out,
+            "\
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key>
+  <string>dev.getbeb.courier</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{exe}</string>
+    <string>listen</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BEB_COURIER_ROOT</key>
+    <string>{root}</string>
+    <key>BEB_BIN</key>
+    <string>{beb}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+"
+        )
+        .map_err(|e| format!("cannot write: {e}"))?;
+        drop(out);
+        note("write that to ~/Library/LaunchAgents/dev.getbeb.courier.plist");
+        note("then: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.getbeb.courier.plist");
+        return Ok(());
+    }
+
     write!(
         out,
         "\
@@ -747,10 +794,7 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
-",
-        exe = exe.display(),
-        root = root.display(),
-        beb = beb
+"
     )
     .map_err(|e| format!("cannot write: {e}"))?;
     drop(out);

@@ -233,11 +233,22 @@ ok "and ships what is written to the outbox meanwhile, with nobody running sync"
 # run one, "beb" resolved to a different install four versions behind,
 # which refused every frame; the same command in a login shell worked.
 courier unit >"$W/unit" 2>/dev/null || die "unit"
-grep -q "^Environment=BEB_BIN=/" "$W/unit" ||
-    die "the unit does not name beb by absolute path: $(grep Environment "$W/unit")"
-grep -qF "Environment=BEB_BIN=$BEB" "$W/unit" ||
-    die "the unit names a different beb than the one in use"
-ok "the unit names the beb this operator can see, since systemd's PATH is not theirs"
+# Whichever supervisor this platform has, it has to name beb absolutely:
+# neither systemd nor launchd inherits the operator's PATH.
+grep -qF "$BEB" "$W/unit" || die "the file names a different beb than the one in use: $(cat "$W/unit")"
+case "$(uname -s)" in
+    Darwin)
+        grep -q '<key>Label</key>' "$W/unit" || die "macOS got something that is not a plist"
+        grep -q 'dev.getbeb.courier' "$W/unit" || die "the plist has no label"
+        grep -q '\[Service\]' "$W/unit" && die "macOS got a systemd unit, which nothing there reads"
+        ;;
+    *)
+        grep -q "^Environment=BEB_BIN=/" "$W/unit" ||
+            die "the unit does not name beb by absolute path: $(grep Environment "$W/unit")"
+        grep -q '<plist' "$W/unit" && die "linux got a plist"
+        ;;
+esac
+ok "unit prints the supervisor file this platform actually reads, naming beb absolutely"
 
 # beb decides admission before it reads a body, so a refusal breaks the
 # pipe mid-write. What the operator needs then is beb's sentence, not the

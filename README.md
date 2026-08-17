@@ -82,7 +82,10 @@ this as a service, `beb send` said "a carrier takes it from there", the
 carrier was running, and the mail sat in the outbox until somebody ran
 `sync` by hand. Nothing reported a fault, because nothing had faulted.
 
-`beb-courier unit` prints a systemd user unit that keeps it standing.
+`beb-courier unit` prints the supervisor file this platform reads: a
+systemd user unit on Linux, a launchd agent on macOS. It prints it
+rather than installing it, because where such a file belongs is the
+operator's business.
 
 ## Commands
 
