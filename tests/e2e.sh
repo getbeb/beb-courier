@@ -92,6 +92,20 @@ test -f "$BEB_COURIER_ROOT/id_ed25519.pub" || die "no key was minted"
 grep -q "ssh://127.0.0.1:$PORT" "$BEB_COURIER_ROOT/depot" || die "the depot was not recorded"
 ok "init mints one key for the machine and writes down the depot"
 
+# The comment is how an operator tells one authorized_keys line from the
+# next, and it came out "beb-courier@unknown" on both machines of the
+# first deployment.
+comment=$(awk '{print $3}' "$BEB_COURIER_ROOT/id_ed25519.pub")
+case "$comment" in
+    beb-courier@?*) ;;
+    *) die "the key comment is \"$comment\"" ;;
+esac
+if command -v hostname >/dev/null 2>&1 && [ -n "$(hostname 2>/dev/null)" ]; then
+    test "$comment" != "beb-courier@unknown" ||
+        die "the key is labelled unknown on a machine that knows its name"
+fi
+ok "the key is labelled with this machine's name, so a line names a courier"
+
 courier init "ssh://elsewhere" >/dev/null 2>"$W/err" && die "init overwrote an existing key"
 grep -q 'already has a courier key' "$W/err" || die "second init: $(cat "$W/err")"
 ok "a second init is refused, because a new key is one the depot never heard of"

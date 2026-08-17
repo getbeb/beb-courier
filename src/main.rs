@@ -239,10 +239,7 @@ fn cmd_init(args: &[String]) -> Result<(), Fail> {
     }
     private_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
 
-    let label = format!(
-        "beb-courier@{}",
-        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
-    );
+    let label = format!("beb-courier@{}", hostname());
     let out = Command::new("ssh-keygen")
         .args(["-q", "-t", "ed25519", "-N", "", "-C", &label, "-f"])
         .arg(&key)
@@ -265,6 +262,24 @@ fn cmd_init(args: &[String]) -> Result<(), Fail> {
     note(&format!("depot {} in {}", host_of(&depot), depot_path(&root).display()));
     note("beb-courier whoami prints what the depot operator needs");
     Ok(())
+}
+
+/// The comment on the courier key, which is how an operator tells one
+/// line of authorized_keys from the next.
+///
+/// Asked of `hostname` rather than of the environment: HOSTNAME is a
+/// shell variable, not an exported one, so reading it named every
+/// courier "unknown" -- which is what the first two deployed keys are
+/// still called, since a comment is written once at init.
+fn hostname() -> String {
+    Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !s.contains(char::is_whitespace))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn host_of(d: &Depot) -> String {
