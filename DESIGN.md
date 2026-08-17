@@ -65,8 +65,8 @@ and why `listen` is a thing you add rather than a thing you need.
 ## Verbs
 
     beb-courier init          mint this machine's courier key
-    beb-courier whoami        the authorized_keys line for a depot,
-                              and the recipients this machine reads for
+    beb-courier whoami        everything a depot operator needs from
+                              this machine, and nothing else
     beb-courier sync          push the outbox, pull the inbox, once
     beb-courier listen        hold a connection so arrivals wake a
                               session; the only long-lived verb
@@ -100,6 +100,37 @@ Which also means two couriers for one identity are safe: both pull the
 same frame, both hand it to beb, and the second is told it was already
 delivered. Coordination between them is an optimisation, not a
 correctness requirement.
+
+## What whoami prints
+
+Setting up a depot means moving two facts from a client machine to a
+machine it was built to be unable to reach: which key will be calling,
+and which queues it collects for. Both live here, so one command hands
+over both and the operator pastes the result:
+
+    $ beb-courier whoami
+    command="…beb-depot serve …",restrict ssh-ed25519 AAAA… courier@laptop
+    bb68ed0016fd16b5b04cd295b0433c3a54e15f34dcf898ca248dfb34dfa446f0
+    25157d6074b94409be182632c8860c65d91ebb6a6d35a6561847975a095de02e
+    beb-courier: 1 courier key, 2 recipients
+    beb-courier: give these to whoever runs the depot
+
+Recipients on stdout, one per line, so the whole thing pipes into
+`beb-depot authorize` where both machines happen to be reachable at
+once. Prose on stderr, as everywhere else in this family.
+
+The recipient list is not a thing this program knows. It is a directory
+read: beb names each mailbox for the identity's key, so the spool holds
+exactly the queue names a depot wants, and the only work is dropping
+`outbox`, which sits beside them. Sending to a stranger never invents a
+mailbox and a mailbox appears at `beb init`, so what is left is
+precisely who reads here, at the moment somebody first asks.
+
+Which is why this lives here rather than in beb. The fact is beb's; the
+*use* is a depot's, and beb knows nothing about depots. Until this verb
+exists the answer is `ls` and a hex filter, written out in beb-depot's
+README -- shell trivia standing in for a command, which is what a
+missing verb looks like.
 
 ## Being allowed to collect
 
