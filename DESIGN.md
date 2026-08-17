@@ -67,20 +67,31 @@ and why `listen` is a thing you add rather than a thing you need.
     beb-courier init          mint this machine's courier key
     beb-courier whoami        everything a depot operator needs from
                               this machine, and nothing else
-    beb-courier sync          push the outbox, pull the inbox, once
+    beb-courier sync          push the outbox, drain the depot, once
     beb-courier listen        hold a connection so arrivals wake a
                               session; the only long-lived verb
     beb-courier unit          print the unit that keeps listen standing
 
 ## Config
 
-Topology, not knobs. Which depot, and how to reach it:
+Topology, not knobs. Which depot, and how to reach it, in
+`$BEB_COURIER_ROOT`:
 
-    depot = ssh://depot.internal
+    id_ed25519    this machine's courier key
+    depot         ssh://depot.internal
+    ssh_config    optional, and used only if it is there
 
 A scheme, so that a second way of reaching a depot has somewhere to be
 named without anything being renamed. The depot itself is indifferent
 to which one carried the bytes.
+
+`ssh_config` is the rest of the topology rather than a knob. ssh
+expands `~` from the password database and not from HOME, so a courier
+running as a daemon user has no other way to be told the depot's host
+key -- and the alternative, passing StrictHostKeyChecking=no, would
+throw away the one thing ssh is doing between here and the depot.
+Absent means "use this account's ordinary ssh setup", which is right
+when a courier runs as a person.
 
 ## Custody
 
@@ -108,16 +119,27 @@ machine it was built to be unable to reach: which key will be calling,
 and which queues it collects for. Both live here, so one command hands
 over both and the operator pastes the result:
 
-    $ beb-courier whoami
-    command="…beb-depot serve …",restrict ssh-ed25519 AAAA… courier@laptop
+    $ beb-courier whoami > laptop.handover
+    beb-courier: 1 key, 2 queues this machine reads for
+    beb-courier: give this to whoever runs the depot: beb-depot authorize <this file>
+
+    $ cat laptop.handover
+    ssh-ed25519 AAAA… beb-courier@laptop
     bb68ed0016fd16b5b04cd295b0433c3a54e15f34dcf898ca248dfb34dfa446f0
     25157d6074b94409be182632c8860c65d91ebb6a6d35a6561847975a095de02e
-    beb-courier: 1 courier key, 2 recipients
-    beb-courier: give these to whoever runs the depot
 
-Recipients on stdout, one per line, so the whole thing pipes into
-`beb-depot authorize` where both machines happen to be reachable at
-once. Prose on stderr, as everywhere else in this family.
+The key first, the queues after, prose on stderr so the file is only
+ever the handover. `beb-depot authorize` reads exactly that shape, so
+the operator names no queue at all.
+
+It prints the *key*, not the `authorized_keys` line, and the difference
+is not cosmetic. That line has to name the depot's own binary and its
+own root, neither of which this machine knows or should guess -- a
+courier that guessed would write a line that looked right and pointed
+nowhere. The depot builds it, from this file, because the depot is the
+only side that knows where it lives. An earlier draft of this document
+had `whoami` printing the whole line; implementing it is what showed
+that it cannot.
 
 The recipient list is not a thing this program knows. It is a directory
 read: beb names each mailbox for the identity's key, so the spool holds
@@ -127,19 +149,14 @@ mailbox and a mailbox appears at `beb init`, so what is left is
 precisely who reads here, at the moment somebody first asks.
 
 Which is why this lives here rather than in beb. The fact is beb's; the
-*use* is a depot's, and beb knows nothing about depots. Until this verb
-exists the answer is `ls` and a hex filter, written out in beb-depot's
-README -- shell trivia standing in for a command, which is what a
-missing verb looks like.
+*use* is a depot's, and beb knows nothing about depots.
 
 ## Being allowed to collect
 
 A depot will not hand mail to a courier that has not been granted the
-recipient, and granting is the operator's, at the depot: one
-`beb-depot allow` line beside the `authorized_keys` line. So a courier
-has nothing to do here beyond telling the operator what to type, which
-is what `whoami` prints -- its own line, and the recipients this
-machine reads for.
+recipient, and granting is the operator's, at the depot, in one
+`beb-depot authorize` against the file `whoami` printed. So a courier
+has nothing to do here beyond handing that file over.
 
 There was a `register` verb here: the courier presenting a claim
 signed by each identity it holds, so that adding an identity would not

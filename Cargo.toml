@@ -1,0 +1,11 @@
+[package]
+name = "beb-courier"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Moves beb's mail between machines, and knows nothing about mail"
+license = "MIT"
+repository = "https://github.com/getbeb/beb-courier"
+
+[profile.release]
+strip = true
