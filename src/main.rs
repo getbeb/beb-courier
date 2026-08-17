@@ -31,6 +31,19 @@ const FRAME_MAX: u64 = 64 * 1024 * 1024;
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+/// How often `listen` looks in the outbox.
+///
+/// A poll, and cheap enough not to argue about: reading an empty outbox
+/// measured 0.018ms against 1277ms for the one ssh handshake it exists
+/// to trigger, so looking four times a second costs about seventy
+/// thousandths of the work it saves waiting for. A kernel watch would
+/// notice instantly and cost a platform's worth of code that beb already
+/// carries and this does not.
+///
+/// Nothing connects on an empty outbox: `push` reads the directory and
+/// returns without opening anything when there is nothing in it.
+const OUTBOX_POLL: Duration = Duration::from_millis(250);
+
 struct Fail {
     code: u8,
     msg: String,
@@ -66,7 +79,8 @@ beb-courier carries beb's mail to and from a depot.
   beb-courier sync
       push what is waiting to leave, pull what is waiting to arrive
   beb-courier listen
-      hold a connection open so arrivals land as they happen
+      carry both ways until stopped: arrivals land as they happen,
+      and what is waiting to leave goes as it is written
   beb-courier unit
       a systemd unit that keeps listen standing
 
@@ -183,6 +197,7 @@ fn ssh_config_path(root: &Path) -> PathBuf {
 /// One scheme today. The scheme is written down anyway so that a second
 /// way of reaching a depot has somewhere to be named without anything
 /// being renamed, which is the whole reason it is not a bare hostname.
+#[derive(Clone)]
 struct Depot {
     host: String,
     port: Option<String>,
@@ -563,13 +578,33 @@ fn hand_to_beb(frame: &[u8], to: &str) -> Result<(), Fail> {
     )))
 }
 
+/// Both directions until stopped.
+///
+/// Inbound is why a long-lived verb exists at all: a depot cannot dial a
+/// client behind NAT, so the client holds a connection open and lets the
+/// far side block inside it.
+///
+/// Outbound was left to `sync` on the argument that the outbox only
+/// fills because somebody sent something, so the sender is already there
+/// to push it. That is true of a person at a shell and false of an agent:
+/// on the first machine to run this as a service, `beb send` said "a
+/// carrier takes it from there", the carrier was running, and the mail
+/// sat in the outbox until somebody ran `sync` by hand. Nothing reported
+/// a fault, because nothing had faulted.
+///
+/// So the two halves run together, in two threads, because one blocks
+/// inside a connection the depot owns and the other must not wait on it.
 fn cmd_listen(args: &[String]) -> Result<(), Fail> {
     if !args.is_empty() {
         return Err("listen takes nothing: beb-courier listen".into());
     }
     let root = root()?;
     let depot = read_depot(&root)?;
-    note(&format!("holding a connection to {}", host_of(&depot)));
+    note(&format!("carrying both ways with {}", host_of(&depot)));
+
+    let (r, d) = (root.clone(), depot.clone());
+    std::thread::spawn(move || outbound(&r, &d));
+
     let mut wait = BACKOFF_MIN;
     loop {
         match collect(&root, &depot, "pickup") {
@@ -590,14 +625,40 @@ fn cmd_listen(args: &[String]) -> Result<(), Fail> {
     }
 }
 
-/// ssh, with this machine's courier key and nothing assumed.
+/// The outbound half of `listen`: ship what is waiting, as it appears.
 ///
-/// Host checking is left exactly as ssh does it. A courier that passed
-/// StrictHostKeyChecking=no would accept any machine answering on that
-/// address, which is the one thing between here and the depot that ssh
-/// is doing for us. The operator accepts the depot's key once, the way
-/// they would for any host; BatchMode turns a later surprise into a
-/// failure with a reason rather than a prompt nobody is there to answer.
+/// Backs off for the same two reasons the inbound half does, and they
+/// are not the same reason. A depot that cannot be reached will not be
+/// reachable a quarter second later. A frame the depot refuses will be
+/// refused every time it is offered, and at four looks a second that is
+/// the same line four times a second forever, so a refusal quiets down
+/// to once a minute rather than being retried at speed.
+fn outbound(root: &Path, depot: &Depot) -> ! {
+    let mut wait = BACKOFF_MIN;
+    loop {
+        match push(root, depot) {
+            Ok((sent, refused_here)) => {
+                if sent > 0 {
+                    note(&format!("{sent} sent"));
+                }
+                if refused_here > 0 {
+                    std::thread::sleep(wait);
+                    wait = (wait * 2).min(BACKOFF_MAX);
+                    continue;
+                }
+                wait = BACKOFF_MIN;
+            }
+            Err(f) => {
+                note(&f.msg);
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(BACKOFF_MAX);
+                continue;
+            }
+        }
+        std::thread::sleep(OUTBOX_POLL);
+    }
+}
+
 fn ssh(depot: &Depot, root: &Path) -> Command {
     let mut c = Command::new("ssh");
     let cfg = ssh_config_path(root);

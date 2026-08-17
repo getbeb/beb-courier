@@ -65,15 +65,23 @@ is the shape for a timer or an agent's turn boundary. Exit 2 when there
 was nothing either way, 3 when the depot refused a frame, which leaves
 that frame in the outbox and says which.
 
-For mail that lands the moment it is sent, hold a connection open:
+To stop running it, run it once and leave it:
 
 ```sh
 beb-courier listen
 ```
 
-A depot cannot dial a client behind NAT, so the client dials out and
-lets the far side block inside the connection. Without `listen` mail
-still arrives at the next `sync`; what is lost is only the promptness.
+Both directions, until stopped. Arrivals land as they happen, because a
+depot cannot dial a client behind NAT and so the client dials out and
+lets the far side block inside the connection. Departures leave as they
+are written, because the machine that sends is not always a person who
+will then run `sync`.
+
+That second half is newer than the first. On the machine that first ran
+this as a service, `beb send` said "a carrier takes it from there", the
+carrier was running, and the mail sat in the outbox until somebody ran
+`sync` by hand. Nothing reported a fault, because nothing had faulted.
+
 `beb-courier unit` prints a systemd user unit that keeps it standing.
 
 ## Commands

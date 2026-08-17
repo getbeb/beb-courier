@@ -202,4 +202,31 @@ finally:
 PY
 ok "listen holds a connection open, and a frame dropped meanwhile lands unasked"
 
+# The other half, and the one that was missing: mail written while listen
+# is running has to leave without anybody running sync. It did not, on a
+# real machine, for as long as nobody looked in the outbox.
+python3 - "$C" "$D" "$BEB" "$W" "$BOBQ" <<'PY2' || die "listen ships the outbox"
+import os, subprocess, sys, time
+c, d, beb, w, q = sys.argv[1:]
+env = dict(os.environ, XDG_DATA_HOME=w + "/bob/data", BEB_BIN=beb)
+p = subprocess.Popen([c, "listen"], env=env,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+try:
+    time.sleep(1.5)
+    outbox = os.path.join(w, "bob/data/beb/outbox")
+    os.makedirs(outbox, exist_ok=True)
+    name = "000000000000000042-" + q
+    with open(os.path.join(outbox, name), "wb") as f:
+        f.write(b"written while listen was running")
+    for _ in range(150):                       # up to 15s
+        if not os.path.exists(os.path.join(outbox, name)):
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("listen never shipped it; the outbox still holds " + name)
+finally:
+    p.kill()
+PY2
+ok "and ships what is written to the outbox meanwhile, with nobody running sync"
+
 echo "all $n tests passed"

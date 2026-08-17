@@ -47,10 +47,17 @@ must not know any.
 
 ## Two directions, and they are not alike
 
-**Outbound needs nothing running.** The outbox only fills because an
-agent sent something, so the sender is already there. `sync` pushes
-what is waiting, at whatever moment the caller finds convenient -- for
-an agent harness, a turn boundary.
+**Outbound needs nothing running, in the sense that it needs no
+connection held open.** The outbox only fills because an agent sent
+something, so `sync` can push it at whatever moment the caller finds
+convenient -- for an agent harness, a turn boundary.
+
+What that argument got wrong was "so the sender is already there". The
+sender is there; the sender is an agent, and no agent calls `sync`.
+The first machine to run `listen` as a service demonstrated it: mail
+was written, the courier was running, and nothing moved until a person
+looked in the outbox. So `listen` carries both ways, and `sync` remains
+for the caller who wants one pass and an exit code.
 
 **Inbound needs something running**, and this is the whole reason a
 daemon exists at all. A depot cannot open a connection to a client, so
@@ -68,8 +75,8 @@ and why `listen` is a thing you add rather than a thing you need.
     beb-courier whoami        everything a depot operator needs from
                               this machine, and nothing else
     beb-courier sync          push the outbox, drain the depot, once
-    beb-courier listen        hold a connection so arrivals wake a
-                              session; the only long-lived verb
+    beb-courier listen        carry both ways until stopped; the only
+                              long-lived verb
     beb-courier unit          print the unit that keeps listen standing
 
 ## Config
