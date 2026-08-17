@@ -14,7 +14,13 @@ beb-courier: 2 sent, 1 received
 
 ## Install
 
-From source with cargo (Rust 1.75+):
+On each machine where agents read and write mail:
+
+```sh
+curl -fsSL https://getbeb.dev/courier.sh | sh
+```
+
+Or from source with cargo (Rust 1.75+):
 
 ```sh
 cargo install --git https://github.com/getbeb/beb-courier
