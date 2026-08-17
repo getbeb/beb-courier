@@ -132,6 +132,34 @@ It will not pass `StrictHostKeyChecking=no`. That accepts any machine
 answering on the depot's address, and host authentication is the one
 thing ssh does here that nothing else does.
 
+## Is it working
+
+```console
+$ beb-courier status
+beb-courier: 0.4.0 at ~/.local/bin/beb-courier, root ~/.local/share/beb-courier
+beb-courier: 3 queues, 0 waiting to leave, beb is beb 0.10.0
+beb-courier: supervised by ~/Library/LaunchAgents/dev.getbeb.courier.plist
+beb-courier: depot.internal answers and knows this key
+```
+
+The depot is probed with an intent it refuses. The refusal is the
+answer: it proves the host is reachable, the key authenticates, and sshd
+ran the forced command. It moves no mail, the way a `pickup` would.
+
+Exit 3 when something disagrees, which is most often the supervisor file
+and the shell pointing at different bebs:
+
+```console
+$ beb-courier status
+beb-courier: ~/.config/systemd/user/beb-courier.service does not name
+             /home/me/.local/bin/beb, so the service and this shell
+             disagree about beb
+beb-courier: one thing does not agree
+```
+
+That was the outage here: a unit resolving a beb four versions behind
+while the same command in a login shell worked.
+
 ## Design
 
 Nothing is removed until the other end has it, in either direction, so

@@ -70,7 +70,7 @@ impl From<&str> for Fail {
 }
 
 const USAGE: &str = "\
-beb-courier carries beb's mail to and from a depot.
+beb-courier {version} carries beb's mail to and from a depot.
 
   beb-courier init DEPOT
       mint this machine's courier key and name the depot it uses
@@ -82,7 +82,9 @@ beb-courier carries beb's mail to and from a depot.
       carry both ways until stopped: arrivals land as they happen,
       and what is waiting to leave goes as it is written
   beb-courier unit
-      a systemd unit that keeps listen standing
+      the supervisor file this platform reads
+  beb-courier status
+      whether this machine can still carry, and what it carries for
 
   beb-courier --help
   beb-courier --version
@@ -109,8 +111,9 @@ fn main() -> ExitCode {
         Some("sync") => cmd_sync(&args[1..]),
         Some("listen") => cmd_listen(&args[1..]),
         Some("unit") => cmd_unit(&args[1..]),
+        Some("status") => cmd_status(&args[1..]),
         Some("--help") | Some("-h") | None => {
-            println!("{USAGE}");
+            println!("{}", USAGE.replace("{version}", env!("CARGO_PKG_VERSION")));
             return ExitCode::SUCCESS;
         }
         Some("--version") => {
@@ -721,6 +724,163 @@ fn beb_path() -> String {
 ///
 /// Still printed and never installed. Where a supervisor file belongs,
 /// and whether it is wanted, is the operator's.
+/// Whether this machine can still carry, and what it carries for.
+///
+/// A courier is several things that have to agree and are written in
+/// different places: its key, the depot it names, the supervisor file
+/// that starts it, and the beb that file points at. The one outage here
+/// was that last pair drifting -- a unit resolving a beb four versions
+/// behind, which refused every frame while the same command in a login
+/// shell worked. Every part looked healthy alone.
+///
+/// The depot is probed with an intent it will refuse. A refusal is the
+/// answer: it proves the host is reachable, the key authenticates, and
+/// sshd is running the forced command -- and it moves no mail, which a
+/// pickup or a drain would.
+fn cmd_status(args: &[String]) -> Result<(), Fail> {
+    if !args.is_empty() {
+        return Err("status takes nothing: beb-courier status".into());
+    }
+    let root = root()?;
+    let mut wrong = Vec::new();
+
+    let key = key_path(&root);
+    if !key.is_file() {
+        wrong.push(format!("no key in {}; beb-courier init makes one", root.display()));
+    }
+    let depot = match read_depot(&root) {
+        Ok(d) => Some(d),
+        Err(f) => {
+            wrong.push(f.msg);
+            None
+        }
+    };
+
+    let mine = recipients().unwrap_or_default();
+    // Counted the way `push` reads it: a frame is `<id>-<queue>`, and
+    // the counter and the lock beside it are not mail. Counting the
+    // directory said "2 waiting to leave" on an empty outbox, which is
+    // the kind of wrong that teaches an operator to ignore the verb.
+    let waiting = spool()
+        .map(|s| {
+            fs::read_dir(s.join("outbox"))
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                        .filter(|n| n.split_once('-').is_some_and(|(_, to)| is_queue(to)))
+                        .count()
+                })
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    // The beb this will hand mail to, resolved the way `listen` will.
+    let beb = std::env::var("BEB_BIN").unwrap_or_else(|_| beb_path());
+    let beb_version = std::process::Command::new(&beb)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string());
+    if beb_version.is_none() {
+        wrong.push(format!("{beb} does not answer --version, so nothing can be delivered here"));
+    }
+
+    // The supervisor file, if this machine has one where they live.
+    let sup = supervisor_path();
+    if let Some(sp) = &sup {
+        if sp.is_file() {
+            let text = fs::read_to_string(sp).unwrap_or_default();
+            if !text.contains(&beb) {
+                wrong.push(format!(
+                    "{} does not name {beb}, so the service and this shell disagree about beb",
+                    sp.display()
+                ));
+            }
+            if let Ok(exe) = std::env::current_exe() {
+                if !text.contains(&exe.display().to_string()) {
+                    wrong.push(format!(
+                        "{} runs a different beb-courier than the one you just ran",
+                        sp.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    note(&format!(
+        "{} at {}, root {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()),
+        root.display()
+    ));
+    note(&format!(
+        "{} queues, {waiting} waiting to leave, beb is {}",
+        mine.len(),
+        beb_version.unwrap_or_else(|| "missing".into())
+    ));
+    match (&sup, sup.as_ref().map(|p| p.is_file())) {
+        (Some(p), Some(true)) => note(&format!("supervised by {}", p.display())),
+        (Some(p), _) => note(&format!("no supervisor file at {}; beb-courier unit prints one", p.display())),
+        _ => {}
+    }
+
+    if let Some(d) = &depot {
+        match probe(&root, d) {
+            Probe::Answered => note(&format!("{} answers and knows this key", host_of(d))),
+            Probe::Unreachable(why) => wrong.push(format!("cannot reach {}: {why}", host_of(d))),
+            Probe::Refused(why) => wrong.push(format!("{} would not serve this key: {why}", host_of(d))),
+        }
+    }
+
+    if wrong.is_empty() {
+        return Ok(());
+    }
+    for w in &wrong {
+        note(w);
+    }
+    Err(refused(if wrong.len() == 1 {
+        "one thing does not agree".to_string()
+    } else {
+        format!("{} things do not agree", wrong.len())
+    }))
+}
+
+enum Probe {
+    Answered,
+    Unreachable(String),
+    Refused(String),
+}
+
+/// Ask the depot for something it does not serve.
+///
+/// Exit 3 with its own refusal is the healthy answer: the connection
+/// was made, the key authenticated, and sshd ran the forced command.
+/// 255 is ssh itself, which means the depot was never reached.
+fn probe(root: &Path, depot: &Depot) -> Probe {
+    let out = match ssh(depot, root).arg("status-probe").output() {
+        Ok(o) => o,
+        Err(e) => return Probe::Unreachable(e.to_string()),
+    };
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    match out.status.code() {
+        Some(3) if said.contains("nothing else is served here") => Probe::Answered,
+        Some(255) | None => Probe::Unreachable(if said.is_empty() { "no answer".into() } else { said }),
+        _ => Probe::Refused(if said.is_empty() { "no reason given".into() } else { said }),
+    }
+}
+
+/// Where this platform keeps the file that would supervise `listen`.
+fn supervisor_path() -> Option<PathBuf> {
+    let home = home().ok()?;
+    Some(if cfg!(target_os = "macos") {
+        home.join("Library/LaunchAgents/dev.getbeb.courier.plist")
+    } else {
+        home.join(".config/systemd/user/beb-courier.service")
+    })
+}
+
 fn cmd_unit(args: &[String]) -> Result<(), Fail> {
     if !args.is_empty() {
         return Err("unit takes nothing: beb-courier unit".into());

@@ -124,6 +124,38 @@ ok "whoami prints the key and the queues this machine reads for, and nothing els
 grep -q "may now collect for $BOBQ" "$W/err" || die "authorize by handover: $(cat "$W/err")"
 ok "the depot takes that file whole, so neither side pastes a queue name"
 
+# --- status ---------------------------------------------------------------
+#
+# The one outage here was the unit and the shell disagreeing about which
+# beb to use, and each looked healthy alone. The depot is probed with an
+# intent it refuses: a refusal proves the host is reachable, the key
+# authenticates, and sshd ran the forced command -- and it moves no mail.
+
+# HOME moves for these: status looks for the supervisor file where this
+# platform keeps them, and that is the operator's real launchd agent or
+# systemd unit. A test must not read those, let alone judge them.
+mkdir -p "$W/home"
+sstatus() { env HOME=$W/home XDG_DATA_HOME=$W/bob/data BEB_BIN=$BEB "$C" status "$@"; }
+
+sstatus >/dev/null 2>"$W/err"; rc=$?
+test "$rc" -eq 0 || die "status on a healthy courier exited $rc: $(cat "$W/err" | tail -3)"
+grep -q 'answers and knows this key' "$W/err" || die "status did not probe the depot: $(cat "$W/err")"
+grep -q '1 queues' "$W/err" || die "status counts no queues: $(cat "$W/err")"
+grep -qE 'beb is beb [0-9]' "$W/err" || die "status does not name the beb it would use: $(cat "$W/err")"
+ok "status reports the courier, and a refused intent proves the depot answers"
+
+env HOME=$W/home XDG_DATA_HOME=$W/bob/data BEB_BIN=/nonexistent/beb "$C" status >/dev/null 2>"$W/err" &&
+    die "status passed a beb that cannot run"
+grep -q 'does not answer --version' "$W/err" || die "missing beb unreported: $(cat "$W/err")"
+ok "a beb that cannot answer is caught, since nothing could be delivered"
+
+DEPOT_KEEP=$(cat "$BEB_COURIER_ROOT/depot")
+echo "ssh://127.0.0.1:1" > "$BEB_COURIER_ROOT/depot"
+sstatus >/dev/null 2>"$W/err" && die "status passed an unreachable depot"
+grep -q 'cannot reach' "$W/err" || die "unreachable depot unreported: $(cat "$W/err")"
+printf '%s\n' "$DEPOT_KEEP" > "$BEB_COURIER_ROOT/depot"
+ok "a depot that cannot be reached is caught, and says so as itself"
+
 # --- outbound ------------------------------------------------------------
 
 courier sync >/dev/null 2>"$W/err"; rc=$?
