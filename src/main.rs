@@ -693,7 +693,7 @@ fn cmd_unit(args: &[String]) -> Result<(), Fail> {
         out,
         "\
 [Unit]
-Description=beb-courier: hold a connection to the depot
+Description=beb-courier: carry beb mail both ways
 After=network-online.target
 
 [Service]
