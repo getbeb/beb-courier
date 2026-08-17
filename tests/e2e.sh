@@ -229,4 +229,23 @@ finally:
 PY2
 ok "and ships what is written to the outbox meanwhile, with nobody running sync"
 
+# A unit gets systemd's PATH, not the operator's. On the first machine to
+# run one, "beb" resolved to a different install four versions behind,
+# which refused every frame; the same command in a login shell worked.
+courier unit >"$W/unit" 2>/dev/null || die "unit"
+grep -q "^Environment=BEB_BIN=/" "$W/unit" ||
+    die "the unit does not name beb by absolute path: $(grep Environment "$W/unit")"
+grep -qF "Environment=BEB_BIN=$BEB" "$W/unit" ||
+    die "the unit names a different beb than the one in use"
+ok "the unit names the beb this operator can see, since systemd's PATH is not theirs"
+
+# beb decides admission before it reads a body, so a refusal breaks the
+# pipe mid-write. What the operator needs then is beb's sentence, not the
+# pipe's -- and the child must still be reaped.
+printf 'not a frame at all' >"$W/junk"
+out=$(BEB_IDENTITY=$W/bob XDG_DATA_HOME=$W/bob/data "$BEB" drop <"$W/junk" 2>&1); rc=$?
+test "$rc" -ne 0 || die "beb accepted junk, so this cannot be tested"
+echo "$out" | grep -q '^beb:' || die "beb said nothing about junk: $out"
+ok "beb refuses a malformed frame with a sentence, which is what must survive the broken pipe"
+
 echo "all $n tests passed"

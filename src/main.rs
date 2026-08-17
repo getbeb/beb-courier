@@ -553,18 +553,31 @@ fn hand_to_beb(frame: &[u8], to: &str) -> Result<(), Fail> {
                 "cannot run {beb}: {e}\nBEB_BIN names it if it is not on PATH"
             ))
         })?;
-    child
+    // The write may fail, and its failure is not the reason for
+    // anything. beb decides admission before it reads a body, so a
+    // refusal exits while this is still writing and the pipe breaks --
+    // and "cannot write to beb: Broken pipe" is what the operator then
+    // sees instead of the sentence beb wrote explaining itself. Worse,
+    // returning here left the child unreaped, one zombie per attempt.
+    // So the error is kept, the child is always waited for, and beb's
+    // own words win.
+    let wrote = child
         .stdin
         .take()
         .expect("stdin piped")
-        .write_all(frame)
-        .map_err(|e| format!("cannot write to beb: {e}"))?;
+        .write_all(frame);
     let out = child
         .wait_with_output()
         .map_err(|e| Fail::from(format!("cannot wait for beb: {e}")))?;
     if out.status.success() {
         note(String::from_utf8_lossy(&out.stderr).trim());
         return Ok(());
+    }
+    if let Err(e) = wrote {
+        // Only worth saying when beb said nothing itself.
+        if out.stderr.is_empty() {
+            return Err(Fail::from(format!("cannot write to beb: {e}")));
+        }
     }
     // Not acked, so the depot keeps it. A frame for somebody who does
     // not read here means the depot was told this courier collects for
@@ -678,6 +691,26 @@ fn ssh(depot: &Depot, root: &Path) -> Command {
     c
 }
 
+/// Where `beb` actually is, resolved the way a shell would and then
+/// written down, because the shell that writes a unit and the systemd
+/// that runs it do not share a PATH.
+fn beb_path() -> String {
+    if let Ok(b) = std::env::var("BEB_BIN") {
+        if !b.is_empty() {
+            return b;
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let c = dir.join("beb");
+            if c.is_file() {
+                return c.to_string_lossy().to_string();
+            }
+        }
+    }
+    "beb".to_string()
+}
+
 fn cmd_unit(args: &[String]) -> Result<(), Fail> {
     if !args.is_empty() {
         return Err("unit takes nothing: beb-courier unit".into());
@@ -685,6 +718,15 @@ fn cmd_unit(args: &[String]) -> Result<(), Fail> {
     let exe = std::env::current_exe()
         .map_err(|e| Fail::from(format!("cannot find my own path: {e}")))?;
     let root = root()?;
+    // The beb this operator can see, named by absolute path.
+    //
+    // A unit inherits none of the operator's PATH: systemd gives a user
+    // service /usr/local/bin and /usr/bin and nothing else. On the first
+    // machine to run one, that resolved a beb from another install --
+    // four minor versions behind, refusing every frame as malformed --
+    // while the same command in a login shell used the right one and
+    // worked. The unit says which, so the two cannot disagree.
+    let beb = beb_path();
     let mut out = io::stdout().lock();
     // Printed, never installed. Where a unit belongs and whether it is
     // wanted is the operator's, and a program that writes into
@@ -699,6 +741,7 @@ After=network-online.target
 [Service]
 ExecStart={exe} listen
 Environment=BEB_COURIER_ROOT={root}
+Environment=BEB_BIN={beb}
 Restart=always
 RestartSec=5
 
@@ -706,7 +749,8 @@ RestartSec=5
 WantedBy=default.target
 ",
         exe = exe.display(),
-        root = root.display()
+        root = root.display(),
+        beb = beb
     )
     .map_err(|e| format!("cannot write: {e}"))?;
     drop(out);
