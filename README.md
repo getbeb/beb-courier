@@ -108,10 +108,18 @@ $ beb-courier sync
 beb-courier: 1 sent, 1 received
 ```
 
-Both halves have work now, and `carry` earns more than it does on a
-direct link: a depot cannot dial a client behind NAT, so the client dials
-out and lets the far side block inside the connection, which is how
-arrivals land as they happen rather than at the next `sync`.
+A depot only hands mail to a courier it has been told collects for that
+address, and after the first handover the identity can say so itself:
+
+```console
+$ BEB_IDENTITY=~/newthing beb whoami | beb-courier register
+beb-depot: SHA256:abc... may now collect for a0c0fd70..., by its own signature
+beb-courier: registered at depot.internal; mail for it arrives here now
+```
+
+The depot verifies the claim against the key inside it, so a new
+identity needs nobody there. `beb-courier unregister ADDRESS` undoes it,
+and `beb-depot revoke` does the same from the depot.
 
 ## Routes
 
@@ -137,6 +145,20 @@ beb-courier: 2 routes, collecting from depot.internal
 beb-courier: supervised by ~/Library/LaunchAgents/dev.getbeb.courier.plist
 beb-courier: depot.internal answers and knows this key
 beb-courier: bob.lan answers and knows this key
+beb-courier: depot.internal grants 3
+```
+
+A grant and a mailbox are two facts on two machines, and this is the only
+thing that reads both. Either can go stale in silence: mail for an
+identity nobody granted is refused where you cannot hear it, and a grant
+left behind by a deleted identity keeps a queue alive that nothing will
+collect.
+
+```console
+$ beb-courier status
+beb-courier: 65807a70 is granted there and reads nowhere here
+beb-courier: beb-courier unregister 65807a70a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829304152
+beb-courier: one thing does not agree
 ```
 
 Every place is probed with an intent it refuses, which proves it is
@@ -161,6 +183,7 @@ beb-courier 0.5.0 carries beb's mail to wherever each recipient is.
       mint this machine's courier key
   beb-courier whoami
       this machine's key and the addresses it reads for, for the far side
+
   beb-courier route
       every route, and whether the outbox matches them
   beb-courier route add [ADDRESS] PLACE
@@ -168,12 +191,20 @@ beb-courier 0.5.0 carries beb's mail to wherever each recipient is.
       handover that machine printed, and left off means everything else
   beb-courier route rm ADDRESS | PLACE
       stop routing one address, or everything going to one place
-  beb-courier authorize FILE
-      let the courier in that handover drop mail here, over ssh
+
+  beb-courier authorize KEYFILE
+      let that courier drop mail here, over ssh
+  beb-courier register
+      say a new identity reads here, in its own signature; the address
+      comes from stdin, so: beb whoami | beb-courier register
+  beb-courier unregister ADDRESS
+      give up this machine's claim on one address
+
   beb-courier sync
       push what is waiting to leave, pull what is waiting to arrive
   beb-courier carry
-      hold a connection open so arrivals land as they happen
+      the same, until stopped: arrivals land as they happen, and what
+      is waiting to leave goes as it is written
   beb-courier unit
       the supervisor file this platform reads
   beb-courier status
@@ -185,7 +216,8 @@ beb-courier 0.5.0 carries beb's mail to wherever each recipient is.
 Exit: 0 did it, 1 change the command, 2 nothing to do, 3 refused.
 
 A PLACE is ssh://[user@]host[:port]. A route is an address and a place,
-or a place alone for everything else, and an exact route wins.
+or a place alone for everything else, and an exact route wins. A KEYFILE
+is a courier's public key, or the handover carrying it, or "-" for stdin.
 
 Collection is from the address-less route and nowhere else, since only a
 place that shelves has anything to hand back. A peer holds nothing: it is

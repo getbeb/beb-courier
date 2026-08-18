@@ -193,9 +193,9 @@ holding one fact is the shape of both outages this project has had: a
 unit naming one beb while the shell named another, and a depot's root
 in the environment disagreeing with the one in the forced command. The
 mark is also something `register` would write rather than an operator,
-since "I collect there" is the record of an act. None of it is built,
-and with one collection point the mark would have one legal value,
-which is a knob.
+since "I collect there" is the record of an act and `register` is that
+act. It is not built, and with one collection point the mark would have
+one legal value, which is a knob.
 
 ## Verbs
 
@@ -209,6 +209,9 @@ which is a knob.
                               of either, where everything else goes
     beb-courier route rm      stop routing one address, or one place
     beb-courier authorize     let that courier drop here
+    beb-courier register      say an identity reads here, in its own
+                              signature; the address comes from stdin
+    beb-courier unregister    give up this machine's claim on one address
     beb-courier sync          push the outbox, drain what shelves for
                               here, once
     beb-courier carry         the same, until stopped; the only
@@ -363,17 +366,50 @@ recipient, and granting is the operator's, at the depot, in one
 `beb-depot authorize` against the file `whoami` printed. So a courier
 has nothing to do here beyond handing that file over.
 
-There was a `register` verb here: the courier presenting a claim
-signed by each identity it holds, so that adding an identity would not
-mean touching the depot. That is the right protocol and the wrong
-time. It buys reach at scale, not safety, and until a courier carries
-more identities than an operator can type, a signature-verification
-path on the depot is machinery guarding a decision a human already
-made by hand.
+That was the whole of it until `register`, and what made it wear was
+frequency: the key crosses once, but the list of who reads here goes
+stale on every `beb init`, and re-declaring it meant a round trip to a
+machine this one was built to be unable to reach. The bootstrap was
+being paid again for every identity.
 
-It stays absent rather than stubbed. Nothing in `sync` or `carry`
-asks how a grant was made, so the verb can arrive later without any of
-this changing.
+**A handover crosses because it must; after that the two machines can
+talk.** So the identity says so itself, over the connection there
+already is:
+
+    BEB_IDENTITY=~/newthing beb whoami | beb-courier register
+
+The address arrives on stdin because a courier does not ask beb who it
+is. This composes the one sentence the depot has to believe -- that
+address authorises this fingerprint -- and hands it to `beb sign` to be
+signed, which is `drop` again in the other direction: bytes in, beb's
+key does the work, bytes out.
+
+Three things make it safe, and the third is the one that matters. The
+signature verifies against the key in the claim, with no trust store
+anywhere: the depot builds a one-line `allowed_signers` from the thing
+it is checking, the way beb verifies an envelope. The fingerprint in
+the claim must be the one sshd says is calling, so an intercepted claim
+is useless to anybody else. And **the queue granted is derived from the
+signed key rather than named beside it**, so a courier cannot present a
+valid claim and ask for a different identity's mail.
+
+The namespace is its own, `beb-collect`, which is what stops an
+envelope's signature being presented as a claim on a queue.
+
+`unregister` needs no signature at all, and the asymmetry is the point.
+Adding a claim asserts something about an identity; dropping one asserts
+nothing, since sshd already said who is calling and a courier can only
+ever remove its own line. The worst it can do is stop its own mail.
+
+It names the address rather than working out what is missing. A machine
+with `XDG_DATA_HOME` unset reads for nothing at all, and a courier that
+gave up whatever it could not see would revoke a live identity the first
+time an environment went wrong. Grants are added and dropped by saying
+so, never by inference.
+
+What none of this reaches is the machine that never comes back, which
+cannot call in to give anything up. That grant is the operator's to
+remove, with `beb-depot revoke`, at the depot.
 
 A peer has no grant table to add to, and needs none. `beb drop`
 installs a frame for a mailbox that is here and refuses one that is

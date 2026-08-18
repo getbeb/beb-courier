@@ -133,9 +133,16 @@ test -d "$W/bob/data/beb/$BOBADDR" || die "the address named is not a mailbox he
 grep -q '1 key, 1 addresses' "$W/err" || die "whoami summary: $(cat "$W/err")"
 ok "whoami prints the key and the addresses this machine reads for, and nothing else"
 
+# Two acts, on the depot's two axes: the key decides who connects, the
+# queue is granted separately. bob's own courier would register it, and
+# does later in this file; here it is the operator, because what is
+# being set up is the transport rather than the grant.
 "$D" authorize "$W/handover" >/dev/null 2>"$W/err" || die "authorize: $(cat "$W/err")"
-grep -q "may now collect for $BOBADDR" "$W/err" || die "authorize by handover: $(cat "$W/err")"
-ok "the depot takes that file whole, so neither side pastes an address"
+grep -q 'collects for nothing yet' "$W/err" || die "authorize granted something: $(cat "$W/err")"
+CFP0=$(ssh-keygen -lf "$BEB_COURIER_ROOT/id_ed25519.pub" | awk '{print $2}')
+"$D" grant "$CFP0" "$BOBADDR" >/dev/null 2>"$W/err" || die "grant: $(cat "$W/err")"
+grep -q "may now collect for $BOBADDR" "$W/err" || die "grant ack: $(cat "$W/err")"
+ok "the depot takes the key from that file, and a queue is the other verb"
 
 # --- status ---------------------------------------------------------------
 #
@@ -351,6 +358,102 @@ rm -f "$W/bob/data/beb/outbox/000000000000000031-$STRANGER"
 courier sync >/dev/null 2>&1
 while bob read >/dev/null 2>&1; do :; done   # caught up, so the next read is the peer's
 ok "a place that is asleep holds back its own mail and nobody else's"
+
+# --- registering a new identity, with nobody at the depot ------------------
+#
+# The handover exists because two facts have to cross to a machine this
+# one cannot reach. That is a bootstrap, and it was being paid again on
+# every `beb init`. Once the key is authorized the two machines can talk,
+# so the identity says so itself, signed, over the connection there
+# already is.
+
+mkdir -p "$W/newthing"
+(cd "$W/newthing" && env XDG_DATA_HOME=$W/bob/data XDG_CONFIG_HOME=$W/bob/cfg \
+    "$BEB" init newthing) >/dev/null 2>&1 || die "a second identity on bob's machine"
+NEW=$(env XDG_DATA_HOME=$W/bob/data BEB_IDENTITY=$W/newthing "$BEB" whoami 2>/dev/null)
+NEWADDR=$(printf '%s' "$NEW" |
+    python3 -c 'import base64,sys; print(base64.b64decode(sys.stdin.read().split()[1])[19:51].hex())')
+grep -q "$NEWADDR" "$W/srv/allowed" && die "the new identity was already granted"
+
+# A drop for it is refused while nobody collects, which is the loud half
+# of the same fact. A real frame, because it has to survive the round
+# trip afterwards and beb knows the difference.
+bob pack newthing --subject welcome --body "for the newly registered" \
+    > "$W/bob/data/beb/outbox/000000000000000051-$NEWADDR" 2>/dev/null ||
+    die "pack for the new identity"
+courier sync >/dev/null 2>"$W/err"; rc=$?
+test "$rc" -eq 3 || die "a drop for an unregistered identity exited $rc, wanted 3"
+grep -q 'stays here' "$W/err" || die "no word of it: $(cat "$W/err")"
+
+echo "$NEW" | env XDG_DATA_HOME=$W/bob/data BEB_IDENTITY=$W/newthing BEB_BIN=$BEB \
+    "$C" register >/dev/null 2>"$W/err" || die "register: $(cat "$W/err")"
+grep -q 'by its own signature' "$W/err" || die "the depot did not verify it: $(cat "$W/err")"
+grep -q "$NEWADDR" "$W/srv/allowed" || die "no grant was written: $(cat "$W/srv/allowed")"
+ok "register grants a new identity by its own signature, with nobody at the depot"
+
+# And the same frame now moves, which is the whole point of the grant.
+courier sync >/dev/null 2>"$W/err" || die "sync after register: $(cat "$W/err")"
+test ! -f "$W/bob/data/beb/outbox/000000000000000051-$NEWADDR" ||
+    die "the frame still waits after the grant"
+ok "and the frame that was refused a moment ago leaves"
+
+# A claim is not a bearer token: it authorises one fingerprint, and sshd
+# decides which one is calling.
+mkdir -p "$W/thief"
+cp "$BEB_COURIER_ROOT/ssh_config" "$W/thief/"
+env BEB_COURIER_ROOT=$W/thief XDG_DATA_HOME=$W/bob/data "$C" init >/dev/null 2>&1
+env BEB_COURIER_ROOT=$W/thief XDG_DATA_HOME=$W/bob/data "$C" route add \
+    "ssh://127.0.0.1:$PORT" >/dev/null 2>&1
+echo "$NEW" | env XDG_DATA_HOME=$W/bob/data BEB_IDENTITY=$W/newthing BEB_BIN=$BEB \
+    BEB_COURIER_ROOT=$W/thief "$C" register >/dev/null 2>"$W/err" &&
+    die "an unauthorized courier registered somebody else's identity"
+ok "a courier the depot has not let in cannot register anybody, signature or not"
+
+# Giving up a grant needs no signature, since a courier can only ever
+# take away its own line. It names the queue rather than the key: the
+# depot relates the two only where it must, which is verifying a claim.
+env XDG_DATA_HOME=$W/bob/data BEB_BIN=$BEB "$C" unregister "$NEWADDR" \
+    >/dev/null 2>"$W/err" || die "unregister: $(cat "$W/err")"
+grep -q "$NEWADDR" "$W/srv/allowed" && die "the grant is still there"
+ok "unregister gives up this machine's own grant, and asserts nothing"
+
+env XDG_DATA_HOME=$W/bob/data BEB_BIN=$BEB "$C" unregister "$NEWADDR" \
+    >/dev/null 2>"$W/err"; rc=$?
+test "$rc" -eq 2 || die "unregistering twice exited $rc, wanted 2 (nothing to do)"
+ok "and twice is nothing to do rather than a failure"
+
+# The two facts nothing else reads together: a grant here and a mailbox
+# there. Each is silent on its own, which is why status is the verb that
+# has to notice.
+sstatus >/dev/null 2>"$W/err"; rc=$?
+test "$rc" -eq 3 || die "status passed an identity nobody grants, exiting $rc"
+grep -q 'reads here and is granted nowhere' "$W/err" ||
+    die "the unregistered identity is unreported: $(cat "$W/err")"
+grep -q 'beb whoami | beb-courier register' "$W/err" ||
+    die "status does not name the line that fixes it: $(cat "$W/err")"
+ok "status finds an identity that reads here and is granted nowhere, and names the fix"
+
+echo "$NEW" | env XDG_DATA_HOME=$W/bob/data BEB_IDENTITY=$W/newthing BEB_BIN=$BEB \
+    "$C" register >/dev/null 2>&1 || die "register for the drift test"
+rm -rf "$W/newthing" "$W/bob/data/beb/$NEWADDR"
+sstatus >/dev/null 2>"$W/err"; rc=$?
+test "$rc" -eq 3 || die "status passed a grant nothing collects on, exiting $rc"
+grep -q 'is granted there and reads nowhere here' "$W/err" ||
+    die "the stale grant is unreported: $(cat "$W/err")"
+grep -q "beb-courier unregister $NEWADDR" "$W/err" ||
+    die "status does not name the address to give up: $(cat "$W/err")"
+ok "and a grant left behind by a deleted identity, naming the address it can no longer print"
+
+env XDG_DATA_HOME=$W/bob/data BEB_BIN=$BEB "$C" unregister "$NEWADDR" >/dev/null 2>&1
+sstatus >/dev/null 2>"$W/err" || die "status still disagrees: $(cat "$W/err")"
+ok "and goes quiet once the two agree again"
+
+# The operator's half, for the machine that cannot call in.
+CFP=$(ssh-keygen -lf "$BEB_COURIER_ROOT/id_ed25519.pub" | awk '{print $2}')
+"$D" grant "$CFP" "$NEWADDR" >/dev/null 2>&1 || die "grant"
+"$D" revoke "$CFP" "$NEWADDR" >/dev/null 2>"$W/err" || die "revoke: $(cat "$W/err")"
+grep -q 'drops for it are refused' "$W/err" || die "revoke summary: $(cat "$W/err")"
+ok "revoke takes a grant back at the depot, for a courier that never comes back"
 
 # --- a direct link, with no depot in it ------------------------------------
 #

@@ -77,6 +77,7 @@ beb-courier {version} carries beb's mail to wherever each recipient is.
       mint this machine's courier key
   beb-courier whoami
       this machine's key and the addresses it reads for, for the far side
+
   beb-courier route
       every route, and whether the outbox matches them
   beb-courier route add [ADDRESS] PLACE
@@ -84,8 +85,15 @@ beb-courier {version} carries beb's mail to wherever each recipient is.
       handover that machine printed, and left off means everything else
   beb-courier route rm ADDRESS | PLACE
       stop routing one address, or everything going to one place
-  beb-courier authorize FILE
-      let the courier in that handover drop mail here, over ssh
+
+  beb-courier authorize KEYFILE
+      let that courier drop mail here, over ssh
+  beb-courier register
+      say a new identity reads here, in its own signature; the address
+      comes from stdin, so: beb whoami | beb-courier register
+  beb-courier unregister ADDRESS
+      give up this machine's claim on one address
+
   beb-courier sync
       push what is waiting to leave, pull what is waiting to arrive
   beb-courier carry
@@ -102,7 +110,8 @@ beb-courier {version} carries beb's mail to wherever each recipient is.
 Exit: 0 did it, 1 change the command, 2 nothing to do, 3 refused.
 
 A PLACE is ssh://[user@]host[:port]. A route is an address and a place,
-or a place alone for everything else, and an exact route wins.
+or a place alone for everything else, and an exact route wins. A KEYFILE
+is a courier's public key, or the handover carrying it, or \"-\" for stdin.
 
 Collection is from the address-less route and nowhere else, since only a
 place that shelves has anything to hand back. A peer holds nothing: it is
@@ -124,6 +133,8 @@ fn main() -> ExitCode {
         Some("whoami") => cmd_whoami(&args[1..]),
         Some("route") => cmd_route(&args[1..]),
         Some("authorize") => cmd_authorize(&args[1..]),
+        Some("register") => cmd_register(&args[1..]),
+        Some("unregister") => cmd_unregister(&args[1..]),
         Some("sync") => cmd_sync(&args[1..]),
         Some("carry") => cmd_carry(&args[1..]),
         Some("unit") => cmd_unit(&args[1..]),
@@ -890,8 +901,8 @@ fn cmd_authorize(args: &[String]) -> Result<(), Fail> {
     let file = match args {
         [f] => Path::new(f.as_str()),
         _ => {
-            return Err("authorize takes the handover that machine printed: \
-                        beb-courier authorize FILE"
+            return Err("authorize takes that courier's key file, or the handover \
+                        carrying it: beb-courier authorize KEYFILE"
                 .into())
         }
     };
@@ -987,6 +998,237 @@ fn append_line(p: &Path, line: &str) -> Result<(), Fail> {
     write!(f, "{lead}{line}\n").map_err(|e| format!("cannot write {}: {e}", p.display()))?;
     f.sync_all().map_err(|e| format!("cannot sync: {e}"))?;
     Ok(())
+}
+
+// ---- being allowed to collect ------------------------------------------
+
+/// The namespace a collection claim is signed in, which the depot
+/// checks. Its own, so an envelope's signature can never be presented
+/// as a claim on a queue.
+const CLAIM_NAMESPACE: &str = "beb-collect";
+
+/// register: tell the place that shelves for this machine that a new
+/// identity reads here, with that identity's own signature on it.
+///
+/// The address arrives on stdin because a courier does not ask beb who
+/// it is. `beb whoami` prints it, the operator pipes it, and this
+/// composes the one sentence the depot has to believe and hands it to
+/// `beb sign` to be signed. Every part of that is a hand-off: bytes in,
+/// beb's key does the work, bytes out.
+///
+/// It signs with whatever `BEB_IDENTITY` names, which is why the same
+/// pin has to be set for the pipe and for this. A mismatch is caught at
+/// the depot rather than here, where it would need a question this
+/// program must not ask: the signature simply will not verify against
+/// the address that was handed over.
+fn cmd_register(args: &[String]) -> Result<(), Fail> {
+    if !args.is_empty() {
+        return Err("register takes nothing; the address comes from stdin:\n\
+                    BEB_IDENTITY=<dir> beb whoami | beb-courier register"
+            .into());
+    }
+    let root = root()?;
+    let mut address = String::new();
+    io::stdin()
+        .read_to_string(&mut address)
+        .map_err(|e| Fail::from(format!("cannot read the address: {e}")))?;
+    let address = address.trim();
+    if !address.starts_with("ssh-ed25519 ") {
+        return Err(refused(
+            "that is not a beb address; it is what beb whoami prints:\n\
+             BEB_IDENTITY=<dir> beb whoami | beb-courier register",
+        ));
+    }
+    let place = shelf(&root)?;
+    let fp = fingerprint(&root)?;
+
+    // The claim: the two lines that get signed, then the signature over
+    // exactly those bytes. The depot rebuilds the first part from what it
+    // reads, so nothing depends on this file's shape surviving a copy.
+    let signed = format!("{address}\n{fp}\n");
+    let claim = format!("{signed}{}", sign_as_identity(&signed)?);
+
+    let out = ssh(&place, &root)
+        .arg("register")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            c.stdin.take().expect("stdin piped").write_all(claim.as_bytes())?;
+            c.wait_with_output()
+        })
+        .map_err(|e| Fail::from(format!("cannot run ssh: {e}")))?;
+    let said = String::from_utf8_lossy(&out.stderr);
+    let said = said.trim();
+    if !out.status.success() {
+        return Err(refused(format!("{} would not register it: {said}", show(&place))));
+    }
+    if !said.is_empty() {
+        note(said);
+    }
+    note(&format!("registered at {}; mail for it arrives here now", show(&place)));
+    Ok(())
+}
+
+/// unregister: give up this machine's own grant for one address.
+///
+/// Nothing is signed, and nothing needs to be. sshd tells the depot who
+/// is calling and a courier can only take away its own line, so the
+/// worst it can do is stop its own mail. Adding a claim asserts
+/// something about an identity; dropping one asserts nothing.
+///
+/// The address is named rather than derived from what is missing. A
+/// machine with `XDG_DATA_HOME` unset reads for nothing at all, and a
+/// courier that unregistered whatever it could not see would revoke a
+/// live identity the first time an environment went wrong.
+fn cmd_unregister(args: &[String]) -> Result<(), Fail> {
+    // A queue name, and not what `beb whoami` prints, which is the one
+    // asymmetry with `register` and it is load-bearing. `register` sends
+    // a key because the depot has to check a signature against it;
+    // relating that key to a queue is beb's rule about how a mailbox is
+    // named, and the depot pays it there because it must. Sending a key
+    // here would put the same derivation on the wire to save a paste.
+    let to = match args {
+        [a] if is_address(a) => a.as_str(),
+        [a] => {
+            return Err(refused(format!(
+                "\"{}\" is not an address; it is the 64-character name, which \
+                 beb-courier whoami lists for this machine",
+                trim_to(a, 24)
+            )))
+        }
+        _ => {
+            return Err("unregister takes the address to give up: \
+                        beb-courier unregister ADDRESS"
+                .into())
+        }
+    };
+    let root = root()?;
+    let place = shelf(&root)?;
+    let out = ssh(&place, &root)
+        .arg(format!("unregister {to}"))
+        .output()
+        .map_err(|e| Fail::from(format!("cannot run ssh: {e}")))?;
+    let said = String::from_utf8_lossy(&out.stderr);
+    let said = said.trim();
+    match out.status.code() {
+        Some(0) => {
+            if !said.is_empty() {
+                note(said);
+            }
+            note(&format!(
+                "{} holds nothing for {} now",
+                show(&place),
+                trim_to(to, 8)
+            ));
+            Ok(())
+        }
+        Some(2) => Err(nothing(said.to_string())),
+        _ => Err(refused(format!("{} kept it: {said}", show(&place)))),
+    }
+}
+
+/// What the place that shelves says this courier may collect for.
+///
+/// Asked rather than assumed, because the answer lives on the other
+/// machine and the two drift apart in both directions: an identity
+/// removed here leaves a grant nothing collects on, and an identity
+/// added here collects nothing until somebody says so. Neither shows up
+/// in mail that fails, which is what makes them worth a round trip.
+fn granted(root: &Path, place: &Place) -> Result<Vec<String>, Fail> {
+    let out = ssh(place, root)
+        .arg("granted")
+        .output()
+        .map_err(|e| Fail::from(format!("cannot run ssh: {e}")))?;
+    if !out.status.success() {
+        return Err(refused(format!(
+            "{} would not say what it grants: {}",
+            show(place),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| is_address(l))
+        .map(str::to_string)
+        .collect())
+}
+
+/// The place both verbs talk to, which is the one that shelves.
+fn shelf(root: &Path) -> Result<Place, Fail> {
+    let routes = read_routes(root)?;
+    default_route(&routes).cloned().ok_or_else(|| {
+        refused(
+            "no route takes what is not named, so nothing shelves for this machine\n\
+             a peer holds nothing and has nothing to register with",
+        )
+    })
+}
+
+/// This courier's own fingerprint, which is what sshd will tell the far
+/// side. Asked of ssh-keygen rather than computed, so the one opinion
+/// that matters stays sshd's.
+fn fingerprint(root: &Path) -> Result<String, Fail> {
+    let pubkey = key_path(root).with_extension("pub");
+    let out = Command::new("ssh-keygen")
+        .arg("-lf")
+        .arg(&pubkey)
+        .output()
+        .map_err(|e| Fail::from(format!("cannot run ssh-keygen: {e}")))?;
+    if !out.status.success() {
+        return Err(Fail::from(format!(
+            "no courier key in {}; make one with: beb-courier init",
+            root.display()
+        )));
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+        .ok_or_else(|| Fail::from("ssh-keygen printed no fingerprint".to_string()))
+}
+
+/// Hand bytes to beb to be signed, the way frames are handed to `drop`.
+///
+/// This program holds no key and must not learn where one lives. What it
+/// knows is the same `BEB_IDENTITY` the caller pinned, inherited here,
+/// which is beb's business to resolve and not this one's to look up.
+fn sign_as_identity(payload: &str) -> Result<String, Fail> {
+    let beb = std::env::var("BEB_BIN").unwrap_or_else(|_| "beb".into());
+    let mut child = Command::new(&beb)
+        .args(["sign", CLAIM_NAMESPACE])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            Fail::from(format!(
+                "cannot run {beb}: {e}\nBEB_BIN names it if it is not on PATH"
+            ))
+        })?;
+    let wrote = child
+        .stdin
+        .take()
+        .expect("stdin piped")
+        .write_all(payload.as_bytes());
+    let out = child
+        .wait_with_output()
+        .map_err(|e| Fail::from(format!("cannot wait for beb: {e}")))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        let why = why.trim();
+        if why.is_empty() {
+            if let Err(e) = wrote {
+                return Err(Fail::from(format!("cannot write to beb: {e}")));
+            }
+        }
+        return Err(refused(format!(
+            "beb would not sign the claim: {why}\n\
+             BEB_IDENTITY has to name the identity being registered"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 // ---- the two directions -------------------------------------------------
@@ -1613,6 +1855,34 @@ fn cmd_status(args: &[String]) -> Result<(), Fail> {
         match probe(&root, p) {
             Probe::Answered => note(&format!("{} answers and knows this key", show(p))),
             Probe::Unreachable(why) => wrong.push(format!("cannot reach {}: {why}", show(p))),
+        }
+    }
+
+    // A grant and a mailbox are two facts in two places, and this is the
+    // only thing that reads both. Each direction is silent on its own:
+    // mail for an unregistered identity is refused at the depot with
+    // nobody here to hear it, and a grant left behind keeps a queue alive
+    // that nothing will ever collect.
+    if let Some(place) = default_route(&routes) {
+        match granted(&root, place) {
+            Err(f) => wrong.push(f.msg),
+            Ok(theirs) => {
+                note(&format!("{} grants {}", show(place), theirs.len()));
+                for a in theirs.iter().filter(|a| !mine.contains(a)) {
+                    wrong.push(format!(
+                        "{} is granted there and reads nowhere here\n\
+                         beb-courier unregister {a}",
+                        trim_to(a, 8)
+                    ));
+                }
+                for a in mine.iter().filter(|a| !theirs.contains(a)) {
+                    wrong.push(format!(
+                        "{} reads here and is granted nowhere, so its mail is refused\n\
+                         BEB_IDENTITY=<its directory> beb whoami | beb-courier register",
+                        trim_to(a, 8)
+                    ));
+                }
+            }
         }
     }
 
