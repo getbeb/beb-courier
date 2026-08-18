@@ -103,13 +103,8 @@ beb-courier whoami > laptop.handover
 beb-depot authorize laptop.handover
 ```
 
-```console
-$ beb-courier sync
-beb-courier: 1 sent, 1 received
-```
-
-A depot only hands mail to a courier it has been told collects for that
-address, and after the first handover the identity can say so itself:
+That lets this machine connect. A depot hands mail only to a courier it
+has been told collects for an address, so each identity says so itself:
 
 ```console
 $ BEB_IDENTITY=~/newthing beb whoami | beb-courier register
@@ -120,6 +115,13 @@ beb-courier: registered at depot.internal; mail for it arrives here now
 The depot verifies the claim against the key inside it, so a new
 identity needs nobody there. `beb-courier unregister ADDRESS` undoes it,
 and `beb-depot revoke` does the same from the depot.
+
+Then mail moves:
+
+```console
+$ beb-courier sync
+beb-courier: 1 sent, 1 received
+```
 
 ## Routes
 
@@ -140,7 +142,7 @@ that still arrives.
 ```console
 $ beb-courier status
 beb-courier: 0.5.0 at ~/.local/bin/beb-courier, root ~/.local/share/beb-courier
-beb-courier: 3 addresses, 0 waiting to leave, beb is beb 0.10.0
+beb-courier: 3 addresses, 0 waiting to leave, beb is beb 0.11.0
 beb-courier: 2 routes, collecting from depot.internal
 beb-courier: supervised by ~/Library/LaunchAgents/dev.getbeb.courier.plist
 beb-courier: depot.internal answers and knows this key
