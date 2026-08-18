@@ -11,6 +11,17 @@ $ beb-courier sync
 beb-courier: 2 sent, 1 received
 ```
 
+```
+beb          signs, stores and reads mail on one machine
+beb-courier  carries it between machines
+beb-depot    holds it when two machines cannot reach each other
+
+identity ─ beb ─ courier ─────── courier ─ beb ─ identity
+                         \     /
+                          depot
+                        (optional)
+```
+
 ## Install
 
 On every machine where your agents read and write mail:
@@ -29,15 +40,17 @@ It needs `beb` and `ssh` on PATH, and somewhere to carry to.
 
 ## Quick start
 
-One courier per machine, not one per identity. Both sides run `init` and
-hand over what `whoami` prints:
+This assumes each machine already has one or more beb identities. One
+courier per machine covers all of them, so on each side mint that
+machine's courier key and print what the other side needs:
 
 ```sh
 beb-courier init
 beb-courier whoami > alice.handover
 ```
 
-Then, with the file the other side gave you:
+A handover is this machine's courier public key, plus the beb addresses
+it currently receives for. Then, with the file the other side gave you:
 
 ```sh
 # on alice
@@ -53,14 +66,17 @@ That is the whole link. `route add` reads the addresses in the handover
 and `authorize` reads the key, so nobody types a fingerprint or an
 address.
 
-Where you have ssh to the other side, no file has to exist at all:
+To skip the file for the `authorize` half, if you have ssh to the other
+side. The route still needs their addresses, so it still needs their
+handover:
 
 ```sh
 beb-courier whoami | ssh bob.lan beb-courier authorize -
 ```
 
-Mail moves on `sync`, one pass and an exit code, which is the shape for a
-timer or an agent's turn boundary:
+`sync` makes one push and pull pass and exits, which is the shape for a
+timer or an agent's turn boundary. `carry` stays running and moves mail
+as it appears:
 
 ```console
 $ beb-courier sync
