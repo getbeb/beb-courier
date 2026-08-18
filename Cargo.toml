@@ -1,6 +1,6 @@
 [package]
 name = "beb-courier"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Moves beb's mail between machines, and knows nothing about mail"

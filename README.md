@@ -2,10 +2,9 @@
 
 Carries [beb](https://github.com/getbeb/beb)'s mail between machines.
 
-beb owns no network. What it cannot deliver goes to an outbox, and the
-filename says who it is for. This ships that, collects what a
-[depot](https://github.com/getbeb/beb-depot) is holding, and hands each
-frame to `beb drop`.
+beb owns no network. What it cannot deliver waits in an outbox, and the
+filename says who it is for, so a courier moves it without opening an
+envelope.
 
 ```console
 $ beb-courier sync
@@ -14,7 +13,7 @@ beb-courier: 2 sent, 1 received
 
 ## Install
 
-On each machine where agents read and write mail:
+On every machine where your agents read and write mail:
 
 ```sh
 curl -fsSL https://getbeb.dev/courier.sh | sh
@@ -26,128 +25,123 @@ Or from source with cargo (Rust 1.75+):
 cargo install --git https://github.com/getbeb/beb-courier
 ```
 
-It needs `beb` and `ssh` on PATH, and a depot to carry to.
+It needs `beb` and `ssh` on PATH, and somewhere to carry to.
 
 ## Quick start
 
-One courier per machine, not one per identity.
+One courier per machine, not one per identity. Both sides run `init` and
+hand over what `whoami` prints:
 
 ```sh
-beb-courier init ssh://depot.internal
+beb-courier init
+beb-courier whoami > alice.handover
 ```
 
-That mints a key in `~/.local/share/beb-courier` and writes down the
-depot. Now hand the operator both things they need, in one file:
+Then, with the file the other side gave you:
+
+```sh
+# on alice
+beb-courier route add bob.handover ssh://bob.lan   # where bob's mail goes
+beb-courier authorize bob.handover                 # let bob's courier drop here
+
+# on bob, the same with the other file
+beb-courier route add alice.handover ssh://alice.lan
+beb-courier authorize alice.handover
+```
+
+That is the whole link. `route add` reads the addresses in the handover
+and `authorize` reads the key, so nobody types a fingerprint or an
+address.
+
+Where you have ssh to the other side, no file has to exist at all:
+
+```sh
+beb-courier whoami | ssh bob.lan beb-courier authorize -
+```
+
+Mail moves on `sync`, one pass and an exit code, which is the shape for a
+timer or an agent's turn boundary:
 
 ```console
-$ beb-courier whoami > laptop.handover
-beb-courier: 1 key, 2 queues this machine reads for
-beb-courier: give this to whoever runs the depot: beb-depot authorize <this file>
+$ beb-courier sync
+beb-courier: 1 sent, 0 received
+
+$ beb-courier carry
+beb-courier: carrying outbound only, since nothing shelves for you
+beb-courier: mail still lands the moment a peer drops it in
 ```
 
-The file is this machine's public key, then the queue names it reads
-for. On the depot, that is the whole command:
+## Automatic delivery and collection
+
+`beb-courier unit` prints the file this platform's supervisor reads to
+keep `carry` running:
 
 ```sh
-beb-depot authorize laptop.handover
+# linux
+beb-courier unit > ~/.config/systemd/user/beb-courier.service
+systemctl --user enable --now beb-courier
+
+# macos
+beb-courier unit > ~/Library/LaunchAgents/dev.getbeb.courier.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.getbeb.courier.plist
 ```
 
-Nobody types a fingerprint and nobody types a queue name. Then mail
-moves:
+## Through a depot
+
+When you and the other side cannot reach each other, name one place you
+both can. That is what a [beb-depot](https://github.com/getbeb/beb-depot)
+is:
+
+```sh
+beb-courier init
+beb-courier route add ssh://depot.internal   # everything not routed elsewhere
+beb-courier whoami > laptop.handover
+```
+
+```sh
+# on the depot
+beb-depot authorize laptop.handover
+```
 
 ```console
 $ beb-courier sync
 beb-courier: 1 sent, 1 received
 ```
 
-`sync` finishes: push what is waiting, take what is waiting, exit. It
-is the shape for a timer or an agent's turn boundary. Exit 2 when there
-was nothing either way, 3 when the depot refused a frame, which leaves
-that frame in the outbox and says which.
+Both halves have work now, and `carry` earns more than it does on a
+direct link: a depot cannot dial a client behind NAT, so the client dials
+out and lets the far side block inside the connection, which is how
+arrivals land as they happen rather than at the next `sync`.
 
-To stop running it, run it once and leave it:
-
-```sh
-beb-courier listen
-```
-
-Both directions, until stopped. Arrivals land as they happen, because a
-depot cannot dial a client behind NAT and so the client dials out and
-lets the far side block inside the connection. Departures leave as they
-are written, because the machine that sends is not always a person who
-will then run `sync`.
-
-That second half is newer than the first. On the machine that first ran
-this as a service, `beb send` said "a carrier takes it from there", the
-carrier was running, and the mail sat in the outbox until somebody ran
-`sync` by hand. Nothing reported a fault, because nothing had faulted.
-
-`beb-courier unit` prints the supervisor file this platform reads: a
-systemd user unit on Linux, a launchd agent on macOS. It prints it
-rather than installing it, because where such a file belongs is the
-operator's business.
-
-## Commands
+## Routes
 
 ```console
-$ beb-courier
-beb-courier carries beb's mail to and from a depot.
-
-  beb-courier init DEPOT
-      mint this machine's courier key and name the depot it uses
-  beb-courier whoami
-      this machine's key and the queues it reads for, for the operator
-  beb-courier sync
-      push what is waiting to leave, pull what is waiting to arrive
-  beb-courier listen
-      hold a connection open so arrivals land as they happen
-  beb-courier unit
-      a systemd unit that keeps listen standing
-
-  beb-courier --help
-  beb-courier --version
-
-Exit: 0 did it, 1 change the command, 2 nothing to do, 3 refused.
-
-A DEPOT is ssh://[user@]host[:port] -- a scheme, so that a second way of
-reaching one has somewhere to be named later.
-
-BEB_COURIER_ROOT holds the key, the depot name, and an ssh_config if
-this machine needs one. It defaults to ~/.local/share/beb-courier:
-
-  id_ed25519    this courier's key, minted by init
-  depot         one line, the depot it carries to
-  ssh_config    optional, and used only if it is there
-
-BEB_BIN names the beb to hand mail to, and defaults to what is on PATH.
+$ beb-courier route
+ssh://depot.internal
+d811f21767d40b61...0fe756e ssh://bob.lan   # beb-courier@bob
+beb-courier: 2 routes; nothing waiting to leave
 ```
 
-`ssh_config` is there because ssh expands `~` from the password
-database and not from `HOME`, so a courier running as a daemon user has
-no other way to be told the depot's host key. Put `UserKnownHostsFile`
-in it, or a `ProxyJump`. Leaving it out means "use this account's
-ordinary ssh setup", which is right when the courier runs as a person.
-
-It will not pass `StrictHostKeyChecking=no`. That accepts any machine
-answering on the depot's address, and host authentication is the one
-thing ssh does here that nothing else does.
+An exact route wins over the address-less one, and a route that fails
+does not fall back: the frame waits in the outbox and `sync` names it and
+the host. Delivering it the other way would hide a dead link behind mail
+that still arrives.
 
 ## Is it working
 
 ```console
 $ beb-courier status
-beb-courier: 0.4.0 at ~/.local/bin/beb-courier, root ~/.local/share/beb-courier
-beb-courier: 3 queues, 0 waiting to leave, beb is beb 0.10.0
+beb-courier: 0.5.0 at ~/.local/bin/beb-courier, root ~/.local/share/beb-courier
+beb-courier: 3 addresses, 0 waiting to leave, beb is beb 0.10.0
+beb-courier: 2 routes, collecting from depot.internal
 beb-courier: supervised by ~/Library/LaunchAgents/dev.getbeb.courier.plist
 beb-courier: depot.internal answers and knows this key
+beb-courier: bob.lan answers and knows this key
 ```
 
-The depot is probed with an intent it refuses. The refusal is the
-answer: it proves the host is reachable, the key authenticates, and sshd
-ran the forced command. It moves no mail, the way a `pickup` would.
-
-Exit 3 when something disagrees, which is most often the supervisor file
-and the shell pointing at different bebs:
+Every place is probed with an intent it refuses, which proves it is
+reachable and knows this key without moving any mail. Exit 3 when
+something disagrees, and it says which:
 
 ```console
 $ beb-courier status
@@ -157,25 +151,72 @@ beb-courier: ~/.config/systemd/user/beb-courier.service does not name
 beb-courier: one thing does not agree
 ```
 
-That was the outage here: a unit resolving a beb four versions behind
-while the same command in a login shell worked.
+## Commands
+
+```console
+$ beb-courier
+beb-courier 0.5.0 carries beb's mail to wherever each recipient is.
+
+  beb-courier init
+      mint this machine's courier key
+  beb-courier whoami
+      this machine's key and the addresses it reads for, for the far side
+  beb-courier route
+      every route, and whether the outbox matches them
+  beb-courier route add [ADDRESS] PLACE
+      where a recipient's mail goes; ADDRESS is an address or the
+      handover that machine printed, and left off means everything else
+  beb-courier route rm ADDRESS | PLACE
+      stop routing one address, or everything going to one place
+  beb-courier authorize FILE
+      let the courier in that handover drop mail here, over ssh
+  beb-courier sync
+      push what is waiting to leave, pull what is waiting to arrive
+  beb-courier carry
+      hold a connection open so arrivals land as they happen
+  beb-courier unit
+      the supervisor file this platform reads
+  beb-courier status
+      whether this machine can still carry, and what it carries for
+
+  beb-courier --help
+  beb-courier --version
+
+Exit: 0 did it, 1 change the command, 2 nothing to do, 3 refused.
+
+A PLACE is ssh://[user@]host[:port]. A route is an address and a place,
+or a place alone for everything else, and an exact route wins.
+
+Collection is from the address-less route and nowhere else, since only a
+place that shelves has anything to hand back. A peer holds nothing: it is
+written into directly, and that is the wake.
+
+BEB_COURIER_ROOT holds the key, the routes, and an ssh_config if this
+machine needs one. It defaults to ~/.local/share/beb-courier:
+
+  id_ed25519    this courier's key, minted by init
+  routes        one line each: an address and a place, or a place alone
+  ssh_config    optional, and used only if it is there
+
+BEB_BIN names the beb to hand mail to, and defaults to what is on PATH.
+```
+
+`ssh_config` is there because ssh expands `~` from the password
+database and not from `HOME`, so a courier running as a daemon user has
+no other way to be told a place's host key. Put `UserKnownHostsFile`
+in it, or a `ProxyJump`. Leaving it out means "use this account's
+ordinary ssh setup", which is right when the courier runs as a person.
+
+It will not pass `StrictHostKeyChecking=no`. That accepts any machine
+answering on the depot's address, and host authentication is the one
+thing ssh does here that nothing else does.
 
 ## Design
 
-Nothing is removed until the other end has it, in either direction, so
-a courier that dies mid-transfer loses nothing. It counts no attempts
-and records nothing in flight: exactly-once is not its business,
-because the beb on the receiving end deduplicates whatever it is handed
-twice. Two couriers for one identity are therefore safe.
-
-The rule is that a courier reads the outbox and calls `drop`, and
-touches nothing else. It computes no path into a mailbox, decides who
-lives where, or opens an envelope. Both times a transport reached past
-that line it drifted, and both times it broke silently the next time
-beb changed.
-
-[DESIGN.md](DESIGN.md) has the custody rules, the seam with beb, and
-what a courier refuses to know.
+A courier reads the outbox, hands each frame to `beb drop`, and never
+opens an envelope. [DESIGN.md](DESIGN.md) has the custody rules, the seam
+with beb, what a routing table must never become, and what a courier
+refuses to know.
 
 ## License
 
