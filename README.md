@@ -45,8 +45,13 @@ courier per machine covers all of them, so on each side mint that
 machine's courier key and print what the other side needs:
 
 ```sh
+# on alice
 beb-courier init
 beb-courier whoami > alice.handover
+
+# on bob
+beb-courier init
+beb-courier whoami > bob.handover
 ```
 
 A handover is this machine's courier public key, plus the beb addresses
@@ -66,9 +71,9 @@ That is the whole link. `route add` reads the addresses in the handover
 and `authorize` reads the key, so nobody types a fingerprint or an
 address.
 
-To skip the file for the `authorize` half, if you have ssh to the other
-side. The route still needs their addresses, so it still needs their
-handover:
+If you have ssh to the other side, you can skip the file for the
+`authorize` half. The route still needs their addresses, so it still
+needs their handover:
 
 ```sh
 beb-courier whoami | ssh bob.lan beb-courier authorize -
